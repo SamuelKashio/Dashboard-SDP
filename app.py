@@ -151,8 +151,10 @@ class ZohoSDPClient:
 
     def __init__(self, sdp_portal: str, access_token: str, refresh_token: str,
                  api_domain: str = "https://www.zohoapis.com",
-                 client_id: str = "", client_secret: str = ""):
+                 client_id: str = "", client_secret: str = "",
+                 app_name: str = "itdesk"):
         self.portal        = sdp_portal.rstrip("/")
+        self.app_name      = app_name   # e.g. "itdesk"
         self.access_token  = access_token
         self.refresh_token = refresh_token
         self.api_domain    = api_domain
@@ -191,7 +193,8 @@ class ZohoSDPClient:
             return False, str(e)
 
     def _get(self, endpoint: str, params: dict = None) -> dict:
-        url = f"{self.portal}/api/v3/{endpoint}"
+        # SDP on-premise with custom domain: /app/{app_name}/api/v3/
+        url = f"{self.portal}/app/{self.app_name}/api/v3/{endpoint}"
         try:
             r = requests.get(url, headers=self._auth_header(), params=params, timeout=30)
             if r.status_code == 401:
@@ -425,12 +428,13 @@ def demo_data(n=800) -> pd.DataFrame:
 _secrets = load_secrets()
 
 defaults = {
-    "page":           "general",
-    "use_demo":       _secrets is None,   # Si hay secrets → conectar directo
+    "page":           "diagnostico",      # Arrancar en diagnóstico hasta confirmar conexión
+    "use_demo":       _secrets is None,
     "access_token":   _secrets["access_token"]  if _secrets else "",
     "refresh_token":  _secrets["refresh_token"] if _secrets else "",
     "api_domain":     _secrets["api_domain"]    if _secrets else "https://www.zohoapis.com",
-    "sdp_portal":     _secrets["sdp_portal"]    if _secrets else "",
+    "sdp_portal":     _secrets["sdp_portal"]    if _secrets else "https://soporte.kashio.net",
+    "sdp_app_name":   _secrets.get("sdp_app_name","itdesk") if _secrets else "itdesk",
     "client_id":      _secrets["client_id"]     if _secrets else "",
     "client_secret":  _secrets["client_secret"] if _secrets else "",
     "token_ok":       False,
@@ -451,6 +455,7 @@ def get_client() -> ZohoSDPClient | None:
         api_domain    = st.session_state.api_domain,
         client_id     = st.session_state.client_id,
         client_secret = st.session_state.client_secret,
+        app_name      = st.session_state.get("sdp_app_name", "itdesk"),
     )
 
 # ─────────────────────────────────────────────
@@ -554,13 +559,14 @@ def render_sidebar():
 
         # Nav
         pages = [
-            ("general",   "📊","Informe General"),
-            ("sla_fr",    "⚡","SLA · 1ra Respuesta"),
-            ("sla_res",   "✅","SLA · Resolución"),
-            ("grupos",    "👥","Grupo Resolutor"),
-            ("encuestas", "⭐","Encuestas CSAT"),
-            ("alertas",   "🚨","Alertas & Pendientes"),
-            ("config",    "⚙️","Configuración API"),
+            ("general",      "📊","Informe General"),
+            ("sla_fr",       "⚡","SLA · 1ra Respuesta"),
+            ("sla_res",      "✅","SLA · Resolución"),
+            ("grupos",       "👥","Grupo Resolutor"),
+            ("encuestas",    "⭐","Encuestas CSAT"),
+            ("alertas",      "🚨","Alertas & Pendientes"),
+            ("config",       "⚙️","Configuración API"),
+            ("diagnostico",  "🔬","Diagnóstico API"),
         ]
         for pid, icon, label in pages:
             active = st.session_state.page == pid
@@ -1161,7 +1167,7 @@ def main():
     d_from, d_to, filters = render_sidebar()
 
     # Cargar datos una sola vez por sesión / cambio de filtros
-    if st.session_state.page != "config":
+    if st.session_state.page not in ("config", "diagnostico"):
         if st.session_state.df_main is None or st.session_state.use_demo:
             raw = load_data(d_from, d_to)
             if not st.session_state.use_demo:
@@ -1174,13 +1180,252 @@ def main():
         df = None
 
     page = st.session_state.page
-    if   page == "general":   page_general(df)
-    elif page == "sla_fr":    page_sla_fr(df)
-    elif page == "sla_res":   page_sla_res(df)
-    elif page == "grupos":    page_grupos(df)
-    elif page == "encuestas": page_encuestas(df)
-    elif page == "alertas":   page_alertas(df)
-    elif page == "config":    page_config()
+    if   page == "general":      page_general(df)
+    elif page == "sla_fr":       page_sla_fr(df)
+    elif page == "sla_res":      page_sla_res(df)
+    elif page == "grupos":       page_grupos(df)
+    elif page == "encuestas":    page_encuestas(df)
+    elif page == "alertas":      page_alertas(df)
+    elif page == "config":       page_config()
+    elif page == "diagnostico":  page_diagnostico()
 
 if __name__ == "__main__":
     main()
+
+
+# ─────────────────────────────────────────────
+# PÁGINA DE DIAGNÓSTICO — AGREGA AL ROUTER
+# ─────────────────────────────────────────────
+def page_diagnostico():
+    ph("🔬 Diagnóstico de API", "Verifica la conexión real con ServiceDesk Plus On-Demand")
+
+    st.markdown("""
+    <div class="alert-info">
+    ℹ️ Esta página hace llamadas <b>reales</b> al API REST de SDP (no usa conector).
+    Úsala para verificar que la conexión y los tokens funcionan correctamente.
+    </div>""", unsafe_allow_html=True)
+
+    # ── PASO 1: VERIFICAR URL DEL PORTAL ──
+    st.markdown("### Paso 1 — URL del portal SDP")
+    st.markdown("""
+    Tu portal SDP On-Demand tiene una URL única. Puedes encontrarla:
+    - Entrando a SDP desde el navegador: la URL del browser **es** tu portal
+    - Preguntando al admin de Zoho en el panel de Zoho Developer Console
+    
+    Ejemplos:
+    - `https://kashio.sdpondemand.manageengine.com`
+    - `https://helpdesk.tuempresa.com` (si tienes dominio personalizado)
+    """)
+
+    portal_input = st.text_input(
+        "URL base del portal SDP",
+        value=st.session_state.get("sdp_portal", "https://soporte.kashio.net"),
+        placeholder="https://soporte.kashio.net",
+        key="diag_portal"
+    )
+    app_name_input = st.text_input(
+        "Nombre de la app SDP (parte de la URL: /app/itdesk/...)",
+        value=st.session_state.get("sdp_app_name", "itdesk"),
+        placeholder="itdesk",
+        key="diag_appname"
+    )
+    token_input = st.text_input(
+        "Access Token (pega uno nuevo si expiró)",
+        value=st.session_state.get("access_token", ""),
+        type="password",
+        key="diag_token"
+    )
+
+    if st.button("🧪 Ejecutar diagnóstico completo", type="primary"):
+        if not portal_input:
+            st.error("⚠️ Ingresa la URL del portal primero"); return
+        if not token_input:
+            st.error("⚠️ Ingresa el access token"); return
+
+        portal = portal_input.rstrip("/")
+        token  = token_input.strip()
+        headers = {
+            "Authorization": f"Zoho-oauthtoken {token}",
+            "Accept": "application/json",
+            "Content-Type": "application/x-www-form-urlencoded",
+        }
+
+        # Test 1: Ping al portal
+        st.markdown("#### Test 1 — Conectividad al portal")
+        with st.spinner("Probando conexión..."):
+            try:
+                import requests as req, json as js
+                r = req.get(portal, timeout=10, allow_redirects=True)
+                st.success(f"✅ Portal accesible — HTTP {r.status_code}")
+            except Exception as e:
+                st.error(f"❌ No se pudo conectar al portal: {e}")
+                st.stop()
+
+        # Test 2: Auth endpoint /api/v3/requests con 1 registro
+        st.markdown("#### Test 2 — Autenticación OAuth (GET /api/v3/requests)")
+        app_name = app_name_input.strip() or "itdesk"
+        candidates = [
+            f"{portal}/app/{app_name}/api/v3/requests",
+            f"{portal}/api/v3/requests",
+            f"{portal}/app/itdesk/api/v3/requests",
+        ]
+
+        working_url = None
+        for url in candidates:
+            with st.spinner(f"Probando `{url}`..."):
+                try:
+                    r = req.get(url, headers=headers,
+                               params={"input_data": js.dumps({"list_info":{"row_count":1,"start_index":1}})},
+                               timeout=15)
+                    code = r.status_code
+                    try: body = r.json()
+                    except: body = {"raw": r.text[:500]}
+
+                    col_s, col_c = st.columns([3,1])
+                    with col_c:
+                        if code == 200: st.success(f"HTTP {code}")
+                        elif code == 401: st.error(f"HTTP {code} — Token expirado/inválido")
+                        elif code == 403: st.error(f"HTTP {code} — Sin permisos (scope)")
+                        elif code == 404: st.warning(f"HTTP {code} — URL no encontrada")
+                        else: st.warning(f"HTTP {code}")
+                    with col_s:
+                        st.code(f"URL: {url}", language="text")
+
+                    with st.expander(f"Ver respuesta completa — {url}"):
+                        st.json(body if isinstance(body, dict) else {"response": str(body)[:1000]})
+
+                    if code == 200 and "requests" in body:
+                        working_url = url
+                        st.success(f"🎉 URL correcta encontrada: `{url}`")
+                        total = body.get("list_info", {}).get("total_count", "?")
+                        st.info(f"📊 Total de tickets en SDP: **{total}**")
+                        break
+                except Exception as e:
+                    st.error(f"Error al llamar `{url}`: {e}")
+
+        if not working_url:
+            st.error("❌ Ninguna URL funcionó. Revisa los pasos de solución abajo.")
+
+        # Test 3: Ver estructura de 1 ticket real
+        if working_url:
+            st.markdown("#### Test 3 — Estructura de un ticket real")
+            try:
+                r = req.get(working_url, headers=headers,
+                           params={"input_data": js.dumps({"list_info":{"row_count":1,"start_index":1}})},
+                           timeout=15)
+                tickets = r.json().get("requests", [])
+                if tickets:
+                    t = tickets[0]
+                    st.success(f"✅ Ticket de muestra: #{t.get('display_id', t.get('id'))}")
+
+                    # Mostrar campos relevantes
+                    campos = {
+                        "subject":       t.get("subject"),
+                        "status":        t.get("status", {}).get("name") if isinstance(t.get("status"), dict) else t.get("status"),
+                        "priority":      t.get("priority", {}).get("name") if isinstance(t.get("priority"), dict) else t.get("priority"),
+                        "request_type":  t.get("request_type", {}).get("name") if isinstance(t.get("request_type"), dict) else t.get("request_type"),
+                        "group":         t.get("group", {}).get("name") if isinstance(t.get("group"), dict) else t.get("group"),
+                        "technician":    t.get("technician", {}).get("name") if isinstance(t.get("technician"), dict) else t.get("technician"),
+                        "created_time":  t.get("created_time", {}).get("display_value") if isinstance(t.get("created_time"), dict) else t.get("created_time"),
+                        "udf_fields":    t.get("udf_fields", {}),
+                        "additional_fields": t.get("additional_fields", []),
+                    }
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        st.markdown("**Campos principales detectados:**")
+                        for k, v in campos.items():
+                            if k not in ("udf_fields", "additional_fields"):
+                                st.markdown(f"- `{k}`: `{v}`")
+                    with c2:
+                        st.markdown("**Campos adicionales (UDF):**")
+                        udf = campos["udf_fields"] or {}
+                        if udf:
+                            for k, v in list(udf.items())[:10]:
+                                st.markdown(f"- `{k}`: `{v}`")
+                        else:
+                            st.markdown("*(sin UDF en este ticket)*")
+                        adf = campos["additional_fields"] or []
+                        if adf:
+                            st.markdown("**Additional fields:**")
+                            for f in adf[:5]:
+                                st.markdown(f"- `{f.get('label')}`: `{f.get('value')}`")
+
+                    with st.expander("Ver JSON completo del ticket"):
+                        st.json(t)
+
+                    # Guardar URL correcta
+                    st.session_state.sdp_portal    = portal_input
+                    st.session_state.sdp_app_name  = app_name_input.strip() or "itdesk"
+                    st.session_state.access_token  = token_input
+                    st.session_state.use_demo      = False
+                    st.success("✅ Configuración guardada. Ve al dashboard — usa el sidebar.")
+            except Exception as e:
+                st.error(f"Error leyendo ticket: {e}")
+
+    # ── GUÍA DE SOLUCIÓN ──
+    st.markdown("---")
+    st.markdown("### 🛠️ Solución de problemas comunes")
+
+    with st.expander("❌ HTTP 401 — Token expirado"):
+        st.markdown("""
+        El `access_token` de Zoho dura **1 hora**. Para renovarlo:
+
+        **Opción A — Zoho Developer Console (manual):**
+        1. Ve a [api-console.zoho.com](https://api-console.zoho.com)
+        2. Selecciona tu aplicación
+        3. Ve a **Try API** o **OAuth Playground**
+        4. Usa el `refresh_token` para obtener un nuevo `access_token`
+
+        **Opción B — cURL:**
+        ```bash
+        curl -X POST https://accounts.zoho.com/oauth/v2/token \\
+          -d "grant_type=refresh_token" \\
+          -d "client_id=TU_CLIENT_ID" \\
+          -d "client_secret=TU_CLIENT_SECRET" \\
+          -d "refresh_token=1000.159e561771bacfd8c4d32875dbcfe502.ec64bf5f2696f3b7602fa9e73197a664"
+        ```
+        """)
+
+    with st.expander("❌ HTTP 404 — URL del portal incorrecta"):
+        st.markdown("""
+        La URL del portal tiene este formato para SDP On-Demand:
+        ```
+        https://sdpondemand.manageengine.com/app/{PORTAL_NAME}/api/v3/requests
+        ```
+        Tu `PORTAL_NAME` es el nombre único de tu organización en ManageEngine.
+        
+        **¿Cómo encontrarlo?**
+        - Abre SDP en el navegador
+        - La URL dice: `https://sdpondemand.manageengine.com/app/`**`kashio`**`/...`
+        - Ese `kashio` es tu portal name
+        """)
+
+    with st.expander("❌ HTTP 403 — Sin permisos"):
+        st.markdown("""
+        El scope del token debe incluir `SDPOnDemand.requests.READ`.
+        Verifica en Zoho Developer Console que tu aplicación OAuth tiene ese scope habilitado.
+        """)
+
+    with st.expander("🔑 ¿Dónde están los campos UDF en mi SDP?"):
+        st.markdown("""
+        Los campos adicionales (empresa, región, etc.) pueden aparecer de dos formas en la respuesta JSON:
+        
+        **Forma 1 — udf_fields:**
+        ```json
+        "udf_fields": {
+          "udf_sline_1": "Empresa Alpha",
+          "udf_sline_2": "Corporativa"
+        }
+        ```
+        
+        **Forma 2 — additional_fields:**
+        ```json
+        "additional_fields": [
+          {"label": "Empresa", "value": "Empresa Alpha"},
+          {"label": "Región",  "value": "Norte"}
+        ]
+        ```
+        
+        El diagnóstico de arriba te muestra exactamente qué formato usa tu SDP.
+        Luego ajustamos el parser en `app.py`.
+        """)
